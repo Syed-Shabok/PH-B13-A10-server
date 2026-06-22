@@ -7,7 +7,7 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 
 const port = process.env.PORT || 5000;
 
-console.log("MONGODB_URI:", process.env.MONGODB_URI);
+// console.log("MONGODB_URI:", process.env.MONGODB_URI);
 
 const uri = process.env.MONGODB_URI;
 
@@ -35,7 +35,7 @@ async function run() {
     // console.log(
     //   "Pinged your deployment. You successfully connected to MongoDB!",
     // );
-    console.log("DB_NAME:", process.env.DB_NAME);
+    // console.log("DB_NAME:", process.env.DB_NAME);
     const db = client.db(process.env.DB_NAME);
 
     const ticketsCollection = db.collection("tickets");
@@ -49,6 +49,14 @@ async function run() {
         createdAt: new Date(),
       };
       const result = await ticketsCollection.insertOne(newTickets);
+      res.send(result);
+    });
+
+    app.get("/api/tickets/:email", async (req, res) => {
+      const { email } = req.params;
+      const result = await ticketsCollection
+        .find({ vendorEmail: email })
+        .toArray();
       res.send(result);
     });
   } finally {
