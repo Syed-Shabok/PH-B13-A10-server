@@ -3,7 +3,7 @@ const app = express();
 const dotenv = require("dotenv");
 const cors = require("cors");
 dotenv.config();
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const port = process.env.PORT || 5000;
 
@@ -42,6 +42,14 @@ async function run() {
 
     // Ticket Related APIs
 
+    app.get("/api/tickets/:email", async (req, res) => {
+      const { email } = req.params;
+      const result = await ticketsCollection
+        .find({ vendorEmail: email })
+        .toArray();
+      res.send(result);
+    });
+
     app.post("/api/tickets", async (req, res) => {
       const tickets = req.body;
       const newTickets = {
@@ -52,11 +60,25 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/api/tickets/:email", async (req, res) => {
-      const { email } = req.params;
-      const result = await ticketsCollection
-        .find({ vendorEmail: email })
-        .toArray();
+    app.patch("/api/tickets/:id", async (req, res) => {
+      const { id } = req.params;
+      const updatedTickets = req.body;
+
+      const filter = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          ...updatedTickets,
+        },
+      };
+      const result = await ticketsCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    });
+
+    app.delete("/api/tickets/:id", async (req, res) => {
+      const { id } = req.params;
+      const result = await ticketsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
       res.send(result);
     });
   } finally {
