@@ -39,6 +39,30 @@ async function run() {
     const db = client.db(process.env.DB_NAME);
 
     const ticketsCollection = db.collection("tickets");
+    const usersCollection = db.collection("user");
+
+    // Users Related APIs
+
+    app.get("/api/users/:email", async (req, res) => {
+      const { email } = req.params;
+      const result = await usersCollection.findOne({ email });
+      res.send(result);
+    });
+
+    app.patch("/api/users/:email", async (req, res) => {
+      const { email } = req.params;
+      const updatedData = req.body;
+
+      const filter = { email: email };
+      const updatedDoc = {
+        $set: {
+          ...updatedData,
+          updatedAt: new Date(),
+        },
+      };
+      const result = await usersCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    });
 
     // Ticket Related APIs
 
