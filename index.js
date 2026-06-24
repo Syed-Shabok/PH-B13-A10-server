@@ -66,6 +66,41 @@ async function run() {
 
     // Ticket Related APIs
 
+    // app.get("/api/tickets", async (req, res) => {
+    //   const result = await ticketsCollection.find().toArray();
+    //   res.send(result);
+    // });
+
+    // Add this to your Express server routes
+    app.get("/api/tickets", async (req, res) => {
+      // Base query: Only show approved tickets
+      const query = { status: "approved" };
+
+      // Filter by "From" location (case-insensitive partial match)
+      if (req.query.from) {
+        query.from = { $regex: req.query.from, $options: "i" };
+      }
+
+      // Filter by "To" location (case-insensitive partial match)
+      if (req.query.to) {
+        query.to = { $regex: req.query.to, $options: "i" };
+      }
+
+      // Filter by Transport Type (case-insensitive exact match)
+      if (req.query.transportType && req.query.transportType !== "all") {
+        query.transportType = {
+          $regex: new RegExp(`^${req.query.transportType}$`, "i"),
+        };
+      }
+
+      try {
+        const result = await ticketsCollection.find(query).toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch tickets" });
+      }
+    });
+
     app.get("/api/tickets/:email", async (req, res) => {
       const { email } = req.params;
       const result = await ticketsCollection
