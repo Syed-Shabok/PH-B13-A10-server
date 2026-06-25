@@ -40,6 +40,7 @@ async function run() {
 
     const ticketsCollection = db.collection("tickets");
     const usersCollection = db.collection("user");
+    const bookingsCollection = db.collection("bookings");
 
     // Users Related APIs
 
@@ -71,22 +72,21 @@ async function run() {
     //   res.send(result);
     // });
 
-    // Add this to your Express server routes
     app.get("/api/tickets", async (req, res) => {
-      // Base query: Only show approved tickets
+      // Only show approved tickets
       const query = { status: "approved" };
 
-      // Filter by "From" location (case-insensitive partial match)
+      // Filter by "From" location
       if (req.query.from) {
         query.from = { $regex: req.query.from, $options: "i" };
       }
 
-      // Filter by "To" location (case-insensitive partial match)
+      // Filter by "To" location
       if (req.query.to) {
         query.to = { $regex: req.query.to, $options: "i" };
       }
 
-      // Filter by Transport Type (case-insensitive exact match)
+      // Filter by Transport Type
       if (req.query.transportType && req.query.transportType !== "all") {
         query.transportType = {
           $regex: new RegExp(`^${req.query.transportType}$`, "i"),
@@ -101,13 +101,42 @@ async function run() {
       }
     });
 
-    app.get("/api/tickets/:email", async (req, res) => {
-      const { email } = req.params;
-      const result = await ticketsCollection
-        .find({ vendorEmail: email })
-        .toArray();
-      res.send(result);
+    // /api/tickets/:id    and    /api/tickets/:email were creating conflict
+
+    app.get("/api/tickets/:identifier", async (req, res) => {
+      const { identifier } = req.params;
+
+      try {
+        if (identifier.includes("@")) {
+          const result = await ticketsCollection
+            .find({ vendorEmail: identifier })
+            .toArray();
+          return res.send(result);
+        }
+
+        const query = { _id: new ObjectId(identifier) };
+        const result = await ticketsCollection.findOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch ticket" });
+      }
     });
+
+    // app.get("/api/tickets/:id", async (req, res) => {
+    //   const { id } = req.params;
+
+    //   const query = { _id: new ObjectId(id) };
+    //   const result = await ticketsCollection.findOne(query);
+    //   res.send(result);
+    // });
+
+    // app.get("/api/tickets/:email", async (req, res) => {
+    //   const { email } = req.params;
+    //   const result = await ticketsCollection
+    //     .find({ vendorEmail: email })
+    //     .toArray();
+    //   res.send(result);
+    // });
 
     app.post("/api/tickets", async (req, res) => {
       const tickets = req.body;
@@ -138,6 +167,57 @@ async function run() {
       const result = await ticketsCollection.deleteOne({
         _id: new ObjectId(id),
       });
+      res.send(result);
+    });
+
+    // Bookings Related APIs
+
+    app.get("/api/bookings/passenger/:email", async (req, res) => {
+      const { email } = req.params;
+      try {
+        const result = await bookingsCollection
+          .find({ passengerEmail: email })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch user bookings" });
+      }
+    });
+
+    app.get("/api/bookings/vendor/:email", async (req, res) => {
+      const { email } = req.params;
+      try {
+        const result = await bookingsCollection
+          .find({ vendorEmail: email })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch vendor bookings" });
+      }
+    });
+
+    app.patch("/api/bookings/:id/status", async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body;
+      try {
+        const filter = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: { status: status, updatedAt: new Date() },
+        };
+        const result = await bookingsCollection.updateOne(filter, updatedDoc);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to update status" });
+      }
+    });
+
+    app.post("/api/bookings", async (req, res) => {
+      const bookingData = req.body;
+      const newBooking = {
+        ...bookingData,
+        createdAt: new Date(),
+      };
+      const result = await bookingsCollection.insertOne(newBooking);
       res.send(result);
     });
   } finally {
