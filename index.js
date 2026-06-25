@@ -45,6 +45,15 @@ async function run() {
 
     // Users Related APIs
 
+    app.get("/api/users", async (req, res) => {
+      try {
+        const result = await usersCollection.find().toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch users" });
+      }
+    });
+
     app.get("/api/users/:email", async (req, res) => {
       const { email } = req.params;
       const result = await usersCollection.findOne({ email });
@@ -66,12 +75,62 @@ async function run() {
       res.send(result);
     });
 
+    // Update user role
+    app.patch("/api/users/role/:id", async (req, res) => {
+      const { id } = req.params;
+      const { role } = req.body;
+      try {
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { role } },
+        );
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to update role" });
+      }
+    });
+
+    // Mark vendor as fraud
+    app.patch("/api/users/fraud/:id", async (req, res) => {
+      const { id } = req.params;
+      try {
+        // 1. Mark user as fraud
+        const vendor = await usersCollection.findOneAndUpdate(
+          { _id: new ObjectId(id) },
+          { $set: { isBlocked: true } },
+        );
+
+        // 2. Hide/Reject all tickets from this vendor
+        if (vendor && vendor.email) {
+          await ticketsCollection.updateMany(
+            { vendorEmail: vendor.email },
+            { $set: { status: "rejected" } },
+          );
+        }
+        res.send({
+          success: true,
+          message: "Vendor marked as fraud and tickets hidden.",
+        });
+      } catch (error) {
+        res.status(500).send({ error: "Failed to mark as fraud" });
+      }
+    });
+
     // Ticket Related APIs
 
     // app.get("/api/tickets", async (req, res) => {
     //   const result = await ticketsCollection.find().toArray();
     //   res.send(result);
     // });
+
+    app.get("/api/tickets/all", async (req, res) => {
+      try {
+        const result = await ticketsCollection.find().toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch all tickets" });
+      }
+    });
 
     app.get("/api/tickets", async (req, res) => {
       // Only show approved tickets
@@ -102,7 +161,7 @@ async function run() {
       }
     });
 
-    // /api/tickets/:id    and    /api/tickets/:email were creating conflict
+    // /api/tickets/:id    and    /api/tickets/:email were creating conflict so combined them
 
     app.get("/api/tickets/:identifier", async (req, res) => {
       const { identifier } = req.params;
@@ -139,14 +198,63 @@ async function run() {
     //   res.send(result);
     // });
 
+    // Toggle Advertisement Status
+    app.patch("/api/tickets/:id/advertise", async (req, res) => {
+      const { id } = req.params;
+      const { isAdvertised } = req.body;
+
+      try {
+        // Enforce the max 6 advertised tickets limit
+        if (isAdvertised) {
+          const adCount = await ticketsCollection.countDocuments({
+            isAdvertised: true,
+          });
+          if (adCount >= 6) {
+            return res
+              .status(400)
+              .send({ message: "Maximum 6 tickets can be advertised." });
+          }
+        }
+
+        const result = await ticketsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { isAdvertised } },
+        );
+        res.send(result);
+      } catch (error) {
+        res
+          .status(500)
+          .send({ error: "Failed to update advertisement status" });
+      }
+    });
+
     app.post("/api/tickets", async (req, res) => {
       const tickets = req.body;
+
+      // Verifty vendor is not marked as fraud
+      if (tickets.vendorEmail) {
+        const vendor = await usersCollection.findOne({
+          email: tickets.vendorEmail,
+        });
+
+        if (vendor && vendor.isBlocked) {
+          return res.status(403).send({
+            error: "Account Restricted: Ticket creation denied.",
+          });
+        }
+      }
+
       const newTickets = {
         ...tickets,
         createdAt: new Date(),
       };
-      const result = await ticketsCollection.insertOne(newTickets);
-      res.send(result);
+
+      try {
+        const result = await ticketsCollection.insertOne(newTickets);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to create ticket." });
+      }
     });
 
     app.patch("/api/tickets/:id", async (req, res) => {
@@ -197,6 +305,7 @@ async function run() {
       }
     });
 
+    // Updates booking and creates new payment
     app.post("/api/bookings/payments", async (req, res) => {
       const {
         amount,
