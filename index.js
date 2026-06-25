@@ -41,6 +41,7 @@ async function run() {
     const ticketsCollection = db.collection("tickets");
     const usersCollection = db.collection("user");
     const bookingsCollection = db.collection("bookings");
+    const paymentsCollection = db.collection("payments");
 
     // Users Related APIs
 
@@ -194,6 +195,59 @@ async function run() {
       } catch (error) {
         res.status(500).send({ error: "Failed to fetch vendor bookings" });
       }
+    });
+
+    app.post("/api/bookings/payments", async (req, res) => {
+      const {
+        amount,
+        ticketId,
+        ticketTitle,
+        quantity,
+        email,
+        bookingId,
+        paymentType,
+        transactionId,
+        paymentStatus,
+      } = req.body;
+
+      const parsedQuantity = parseInt(quantity);
+
+      const paymentData = {
+        ticketId,
+        ticketTitle,
+        passengerEmail: email,
+        quantity: parsedQuantity,
+        amount,
+        transactionId,
+        paymentType,
+        paidAt: new Date(),
+      };
+
+      const isPaymentExists = await paymentsCollection.findOne({
+        transactionId,
+      });
+      if (isPaymentExists) {
+        return res.status(200).send({ message: "Already paid" });
+      }
+
+      const paymentRes = await paymentsCollection.insertOne(paymentData);
+
+      await bookingsCollection.updateOne(
+        { _id: new ObjectId(bookingId) },
+        {
+          $set: {
+            paymentStatus: "paid",
+            updatedAt: new Date(),
+          },
+        },
+      );
+
+      await ticketsCollection.updateOne(
+        { _id: new ObjectId(ticketId) },
+        { $inc: { quantity: -parsedQuantity } },
+      );
+
+      res.send(paymentRes);
     });
 
     app.patch("/api/bookings/:id/status", async (req, res) => {
