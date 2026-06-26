@@ -7,8 +7,6 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const port = process.env.PORT || 5000;
 
-// console.log("MONGODB_URI:", process.env.MONGODB_URI);
-
 const uri = process.env.MONGODB_URI;
 
 app.use(cors());
@@ -26,16 +24,12 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
+
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
+    // Connect the client to the server (optional starting in v4.7)
     await client.connect();
-    // Send a ping to confirm a successful connection
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!",
-    // );
-    // console.log("DB_NAME:", process.env.DB_NAME);
+
     const db = client.db(process.env.DB_NAME);
 
     const ticketsCollection = db.collection("tickets");
@@ -43,7 +37,9 @@ async function run() {
     const bookingsCollection = db.collection("bookings");
     const paymentsCollection = db.collection("payments");
 
-    // Users Related APIs
+    // ==========================================
+    // 1. USERS APIs
+    // ==========================================
 
     app.get("/api/users", async (req, res) => {
       try {
@@ -52,27 +48,6 @@ async function run() {
       } catch (error) {
         res.status(500).send({ error: "Failed to fetch users" });
       }
-    });
-
-    app.get("/api/users/:email", async (req, res) => {
-      const { email } = req.params;
-      const result = await usersCollection.findOne({ email });
-      res.send(result);
-    });
-
-    app.patch("/api/users/:email", async (req, res) => {
-      const { email } = req.params;
-      const updatedData = req.body;
-
-      const filter = { email: email };
-      const updatedDoc = {
-        $set: {
-          ...updatedData,
-          updatedAt: new Date(),
-        },
-      };
-      const result = await usersCollection.updateOne(filter, updatedDoc);
-      res.send(result);
     });
 
     // Update user role
@@ -116,19 +91,65 @@ async function run() {
       }
     });
 
-    // Ticket Related APIs
+    app.get("/api/users/:email", async (req, res) => {
+      const { email } = req.params;
+      const result = await usersCollection.findOne({ email });
+      res.send(result);
+    });
 
-    // app.get("/api/tickets", async (req, res) => {
-    //   const result = await ticketsCollection.find().toArray();
-    //   res.send(result);
-    // });
+    app.patch("/api/users/:email", async (req, res) => {
+      const { email } = req.params;
+      const updatedData = req.body;
 
+      const filter = { email: email };
+      const updatedDoc = {
+        $set: {
+          ...updatedData,
+          updatedAt: new Date(),
+        },
+      };
+      const result = await usersCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    });
+
+    // ==========================================
+    // 2. TICKETS APIs
+    // ==========================================
+
+    // STATIC GET ROUTES MUST COME FIRST
     app.get("/api/tickets/all", async (req, res) => {
       try {
         const result = await ticketsCollection.find().toArray();
         res.send(result);
       } catch (error) {
         res.status(500).send({ error: "Failed to fetch all tickets" });
+      }
+    });
+
+    // Get Latest Tickets
+    app.get("/api/tickets/latest", async (req, res) => {
+      try {
+        const result = await ticketsCollection
+          .find({ status: "approved" })
+          .sort({ createdAt: -1 }) // -1 is descending
+          .limit(6)
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch latest tickets" });
+      }
+    });
+
+    // Get Advertised Tickets (Max 6, Approved Only)
+    app.get("/api/tickets/advertised", async (req, res) => {
+      try {
+        const result = await ticketsCollection
+          .find({ status: "approved", isAdvertised: true })
+          .limit(6)
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch advertised tickets" });
       }
     });
 
@@ -161,8 +182,89 @@ async function run() {
       }
     });
 
-    // /api/tickets/:id    and    /api/tickets/:email were creating conflict so combined them
+    // OTHER TICKET ACTIONS
+    app.post("/api/tickets", async (req, res) => {
+      const tickets = req.body;
 
+      // Verify vendor is not marked as fraud
+      if (tickets.vendorEmail) {
+        const vendor = await usersCollection.findOne({
+          email: tickets.vendorEmail,
+        });
+
+        if (vendor && vendor.isBlocked) {
+          return res.status(403).send({
+            error: "Account Restricted: Ticket creation denied.",
+          });
+        }
+      }
+
+      const newTickets = {
+        ...tickets,
+        createdAt: new Date(),
+      };
+
+      try {
+        const result = await ticketsCollection.insertOne(newTickets);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to create ticket." });
+      }
+    });
+
+    // Toggle Advertisement Status
+    app.patch("/api/tickets/:id/advertise", async (req, res) => {
+      const { id } = req.params;
+      const { isAdvertised } = req.body;
+
+      try {
+        // Enforce the max 6 advertised tickets limit
+        if (isAdvertised) {
+          const adCount = await ticketsCollection.countDocuments({
+            isAdvertised: true,
+          });
+          if (adCount >= 6) {
+            return res
+              .status(400)
+              .send({ message: "Maximum 6 tickets can be advertised." });
+          }
+        }
+
+        const result = await ticketsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { isAdvertised } },
+        );
+        res.send(result);
+      } catch (error) {
+        res
+          .status(500)
+          .send({ error: "Failed to update advertisement status" });
+      }
+    });
+
+    app.patch("/api/tickets/:id", async (req, res) => {
+      const { id } = req.params;
+      const updatedTickets = req.body;
+
+      const filter = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          ...updatedTickets,
+        },
+      };
+      const result = await ticketsCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    });
+
+    app.delete("/api/tickets/:id", async (req, res) => {
+      const { id } = req.params;
+      const result = await ticketsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
+    // DYNAMIC IDENTIFIER ROUTE MUST COME LAST FOR TICKETS
     app.get("/api/tickets/:identifier", async (req, res) => {
       const { identifier } = req.params;
 
@@ -182,21 +284,9 @@ async function run() {
       }
     });
 
-    // app.get("/api/tickets/:id", async (req, res) => {
-    //   const { id } = req.params;
-
-    //   const query = { _id: new ObjectId(id) };
-    //   const result = await ticketsCollection.findOne(query);
-    //   res.send(result);
-    // });
-
-    // app.get("/api/tickets/:email", async (req, res) => {
-    //   const { email } = req.params;
-    //   const result = await ticketsCollection
-    //     .find({ vendorEmail: email })
-    //     .toArray();
-    //   res.send(result);
-    // });
+    // ==========================================
+    // 3. VENDOR APIs
+    // ==========================================
 
     // Vendor Revenue & Stats Overview
     app.get("/api/vendor/stats/:email", async (req, res) => {
@@ -240,7 +330,6 @@ async function run() {
 
         // Convert the map into an array for Recharts
         const chartData = Object.values(revenueByTicketMap);
-
         res.send({
           totalTicketsAdded,
           totalTicketsSold,
@@ -253,88 +342,9 @@ async function run() {
       }
     });
 
-    // Toggle Advertisement Status
-    app.patch("/api/tickets/:id/advertise", async (req, res) => {
-      const { id } = req.params;
-      const { isAdvertised } = req.body;
-
-      try {
-        // Enforce the max 6 advertised tickets limit
-        if (isAdvertised) {
-          const adCount = await ticketsCollection.countDocuments({
-            isAdvertised: true,
-          });
-          if (adCount >= 6) {
-            return res
-              .status(400)
-              .send({ message: "Maximum 6 tickets can be advertised." });
-          }
-        }
-
-        const result = await ticketsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { isAdvertised } },
-        );
-        res.send(result);
-      } catch (error) {
-        res
-          .status(500)
-          .send({ error: "Failed to update advertisement status" });
-      }
-    });
-
-    app.post("/api/tickets", async (req, res) => {
-      const tickets = req.body;
-
-      // Verifty vendor is not marked as fraud
-      if (tickets.vendorEmail) {
-        const vendor = await usersCollection.findOne({
-          email: tickets.vendorEmail,
-        });
-
-        if (vendor && vendor.isBlocked) {
-          return res.status(403).send({
-            error: "Account Restricted: Ticket creation denied.",
-          });
-        }
-      }
-
-      const newTickets = {
-        ...tickets,
-        createdAt: new Date(),
-      };
-
-      try {
-        const result = await ticketsCollection.insertOne(newTickets);
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ error: "Failed to create ticket." });
-      }
-    });
-
-    app.patch("/api/tickets/:id", async (req, res) => {
-      const { id } = req.params;
-      const updatedTickets = req.body;
-
-      const filter = { _id: new ObjectId(id) };
-      const updatedDoc = {
-        $set: {
-          ...updatedTickets,
-        },
-      };
-      const result = await ticketsCollection.updateOne(filter, updatedDoc);
-      res.send(result);
-    });
-
-    app.delete("/api/tickets/:id", async (req, res) => {
-      const { id } = req.params;
-      const result = await ticketsCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
-      res.send(result);
-    });
-
-    // Bookings Related APIs
+    // ==========================================
+    // 4. BOOKINGS APIs
+    // ==========================================
 
     app.get("/api/bookings/passenger/:email", async (req, res) => {
       const { email } = req.params;
@@ -439,7 +449,9 @@ async function run() {
       res.send(result);
     });
 
-    // Payments related APIs
+    // ==========================================
+    // 5. PAYMENTS APIs
+    // ==========================================
 
     app.get("/api/payments/passenger/:email", async (req, res) => {
       const { email } = req.params;
@@ -459,6 +471,7 @@ async function run() {
     // await client.close();
   }
 }
+
 run().catch(console.dir);
 
 app.listen(port, () => {
