@@ -237,9 +237,25 @@ async function run() {
           $regex: new RegExp(`^${req.query.transportType}$`, "i"),
         };
       }
+
       try {
-        const result = await ticketsCollection.find(query).toArray();
-        res.send(result);
+        // Pagination logic
+        const page = parseInt(req.query.page) || 1;
+        const perPage = parseInt(req.query.perPage) || 6;
+        const skipItems = (page - 1) * perPage;
+
+        // Get total count for the pagination UI
+        const total = await ticketsCollection.countDocuments(query);
+
+        // Fetch specific page chunk
+        const tickets = await ticketsCollection
+          .find(query)
+          .skip(skipItems)
+          .limit(perPage)
+          .toArray();
+
+        // Return both total and the items
+        res.send({ total, tickets });
       } catch (error) {
         res.status(500).send({ error: "Failed to fetch tickets" });
       }
