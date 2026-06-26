@@ -6,7 +6,6 @@ dotenv.config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const port = process.env.PORT || 5000;
-
 const uri = process.env.MONGODB_URI;
 
 app.use(cors());
@@ -16,7 +15,6 @@ app.get("/", (req, res) => {
   res.send("Server is running.");
 });
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -27,21 +25,86 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // Connect the client to the server (optional starting in v4.7)
     await client.connect();
-
     const db = client.db(process.env.DB_NAME);
 
     const ticketsCollection = db.collection("tickets");
     const usersCollection = db.collection("user");
     const bookingsCollection = db.collection("bookings");
     const paymentsCollection = db.collection("payments");
+    const sessionCollection = db.collection("session");
+
+    // ==========================================
+    // SECURITY MIDDLEWARES
+    // ==========================================
+
+    const verifyToken = async (req, res, next) => {
+      const authHeader = req.headers?.authorization;
+      if (!authHeader) {
+        return res
+          .status(401)
+          .send({ message: "Unauthorized access: No header" });
+      }
+      const token = authHeader.split(" ")[1];
+      if (!token) {
+        return res
+          .status(401)
+          .send({ message: "Unauthorized access: No token" });
+      }
+
+      const session = await sessionCollection.findOne({ token: token });
+      if (!session) {
+        return res
+          .status(401)
+          .send({ message: "Unauthorized access: Invalid session" });
+      }
+
+      const user = await usersCollection.findOne({
+        _id: new ObjectId(session.userId.toString()),
+      });
+
+      if (!user) {
+        return res
+          .status(401)
+          .send({ message: "Unauthorized access: User not found" });
+      }
+
+      req.user = user;
+      next();
+    };
+
+    const verifyAdmin = async (req, res, next) => {
+      if (req.user?.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access: Admins only" });
+      }
+      next();
+    };
+
+    const verifyVendor = async (req, res, next) => {
+      if (req.user?.role !== "vendor") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access: Vendors only" });
+      }
+      next();
+    };
+
+    const verifyPassenger = async (req, res, next) => {
+      if (req.user?.role !== "passenger") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access: Passengers only" });
+      }
+      next();
+    };
 
     // ==========================================
     // 1. USERS APIs
     // ==========================================
 
-    app.get("/api/users", async (req, res) => {
+    app.get("/api/users", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const result = await usersCollection.find().toArray();
         res.send(result);
@@ -50,63 +113,77 @@ async function run() {
       }
     });
 
-    // Update user role
-    app.patch("/api/users/role/:id", async (req, res) => {
-      const { id } = req.params;
-      const { role } = req.body;
-      try {
-        const result = await usersCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { role } },
-        );
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ error: "Failed to update role" });
-      }
-    });
-
-    // Mark vendor as fraud
-    app.patch("/api/users/fraud/:id", async (req, res) => {
-      const { id } = req.params;
-      try {
-        // 1. Mark user as fraud
-        const vendor = await usersCollection.findOneAndUpdate(
-          { _id: new ObjectId(id) },
-          { $set: { isBlocked: true } },
-        );
-
-        // 2. Hide/Reject all tickets from this vendor
-        if (vendor && vendor.email) {
-          await ticketsCollection.updateMany(
-            { vendorEmail: vendor.email },
-            { $set: { status: "rejected" } },
+    app.patch(
+      "/api/users/role/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+        const { role } = req.body;
+        try {
+          const result = await usersCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { role } },
           );
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ error: "Failed to update role" });
         }
-        res.send({
-          success: true,
-          message: "Vendor marked as fraud and tickets hidden.",
-        });
-      } catch (error) {
-        res.status(500).send({ error: "Failed to mark as fraud" });
-      }
-    });
+      },
+    );
 
-    app.get("/api/users/:email", async (req, res) => {
+    app.patch(
+      "/api/users/fraud/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+        try {
+          const vendor = await usersCollection.findOneAndUpdate(
+            { _id: new ObjectId(id) },
+            { $set: { isBlocked: true } },
+          );
+          if (vendor && vendor.email) {
+            await ticketsCollection.updateMany(
+              { vendorEmail: vendor.email },
+              { $set: { status: "rejected" } },
+            );
+          }
+          res.send({ success: true, message: "Vendor marked as fraud." });
+        } catch (error) {
+          res.status(500).send({ error: "Failed to mark as fraud" });
+        }
+      },
+    );
+
+    app.get("/api/users/:email", verifyToken, async (req, res) => {
       const { email } = req.params;
+
+      // DATA OWNERSHIP: Users can only see their own profile, unless they are an admin
+      if (req.user.email !== email && req.user.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: Cannot view another user profile" });
+      }
+
       const result = await usersCollection.findOne({ email });
       res.send(result);
     });
 
-    app.patch("/api/users/:email", async (req, res) => {
+    app.patch("/api/users/:email", verifyToken, async (req, res) => {
       const { email } = req.params;
-      const updatedData = req.body;
 
+      // DATA OWNERSHIP: Users can only update their own profile
+      if (req.user.email !== email) {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: Cannot modify another user profile" });
+      }
+
+      const updatedData = req.body;
       const filter = { email: email };
       const updatedDoc = {
-        $set: {
-          ...updatedData,
-          updatedAt: new Date(),
-        },
+        $set: { ...updatedData, updatedAt: new Date() },
       };
       const result = await usersCollection.updateOne(filter, updatedDoc);
       res.send(result);
@@ -116,8 +193,7 @@ async function run() {
     // 2. TICKETS APIs
     // ==========================================
 
-    // STATIC GET ROUTES MUST COME FIRST
-    app.get("/api/tickets/all", async (req, res) => {
+    app.get("/api/tickets/all", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const result = await ticketsCollection.find().toArray();
         res.send(result);
@@ -126,12 +202,11 @@ async function run() {
       }
     });
 
-    // Get Latest Tickets
     app.get("/api/tickets/latest", async (req, res) => {
       try {
         const result = await ticketsCollection
           .find({ status: "approved" })
-          .sort({ createdAt: -1 }) // -1 is descending
+          .sort({ createdAt: -1 })
           .limit(6)
           .toArray();
         res.send(result);
@@ -140,7 +215,6 @@ async function run() {
       }
     });
 
-    // Get Advertised Tickets (Max 6, Approved Only)
     app.get("/api/tickets/advertised", async (req, res) => {
       try {
         const result = await ticketsCollection
@@ -154,26 +228,15 @@ async function run() {
     });
 
     app.get("/api/tickets", async (req, res) => {
-      // Only show approved tickets
       const query = { status: "approved" };
-
-      // Filter by "From" location
-      if (req.query.from) {
+      if (req.query.from)
         query.from = { $regex: req.query.from, $options: "i" };
-      }
-
-      // Filter by "To" location
-      if (req.query.to) {
-        query.to = { $regex: req.query.to, $options: "i" };
-      }
-
-      // Filter by Transport Type
+      if (req.query.to) query.to = { $regex: req.query.to, $options: "i" };
       if (req.query.transportType && req.query.transportType !== "all") {
         query.transportType = {
           $regex: new RegExp(`^${req.query.transportType}$`, "i"),
         };
       }
-
       try {
         const result = await ticketsCollection.find(query).toArray();
         res.send(result);
@@ -182,28 +245,27 @@ async function run() {
       }
     });
 
-    // OTHER TICKET ACTIONS
-    app.post("/api/tickets", async (req, res) => {
+    app.post("/api/tickets", verifyToken, verifyVendor, async (req, res) => {
       const tickets = req.body;
 
-      // Verify vendor is not marked as fraud
+      // DATA OWNERSHIP: Vendor can only create a ticket under their own email
+      if (tickets.vendorEmail !== req.user.email) {
+        return res.status(403).send({
+          error: "Forbidden: Cannot create ticket for another vendor.",
+        });
+      }
+
       if (tickets.vendorEmail) {
         const vendor = await usersCollection.findOne({
           email: tickets.vendorEmail,
         });
-
         if (vendor && vendor.isBlocked) {
-          return res.status(403).send({
-            error: "Account Restricted: Ticket creation denied.",
-          });
+          return res
+            .status(403)
+            .send({ error: "Account Restricted: Ticket creation denied." });
         }
       }
-
-      const newTickets = {
-        ...tickets,
-        createdAt: new Date(),
-      };
-
+      const newTickets = { ...tickets, createdAt: new Date() };
       try {
         const result = await ticketsCollection.insertOne(newTickets);
         res.send(result);
@@ -212,62 +274,82 @@ async function run() {
       }
     });
 
-    // Toggle Advertisement Status
-    app.patch("/api/tickets/:id/advertise", async (req, res) => {
-      const { id } = req.params;
-      const { isAdvertised } = req.body;
-
-      try {
-        // Enforce the max 6 advertised tickets limit
-        if (isAdvertised) {
-          const adCount = await ticketsCollection.countDocuments({
-            isAdvertised: true,
-          });
-          if (adCount >= 6) {
-            return res
-              .status(400)
-              .send({ message: "Maximum 6 tickets can be advertised." });
+    app.patch(
+      "/api/tickets/:id/advertise",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+        const { isAdvertised } = req.body;
+        try {
+          if (isAdvertised) {
+            const adCount = await ticketsCollection.countDocuments({
+              isAdvertised: true,
+            });
+            if (adCount >= 6) {
+              return res
+                .status(400)
+                .send({ message: "Maximum 6 tickets can be advertised." });
+            }
           }
+          const result = await ticketsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { isAdvertised } },
+          );
+          res.send(result);
+        } catch (error) {
+          res
+            .status(500)
+            .send({ error: "Failed to update advertisement status" });
         }
+      },
+    );
 
-        const result = await ticketsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { isAdvertised } },
-        );
-        res.send(result);
-      } catch (error) {
-        res
-          .status(500)
-          .send({ error: "Failed to update advertisement status" });
-      }
-    });
-
-    app.patch("/api/tickets/:id", async (req, res) => {
+    app.patch("/api/tickets/:id", verifyToken, async (req, res) => {
       const { id } = req.params;
       const updatedTickets = req.body;
 
+      const ticket = await ticketsCollection.findOne({ _id: new ObjectId(id) });
+      if (!ticket) {
+        return res.status(404).send({ message: "Ticket not found" });
+      }
+
+      // DATA OWNERSHIP: Only the admin or the specific vendor who created the ticket can edit it
+      if (req.user.role !== "admin" && ticket.vendorEmail !== req.user.email) {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: You do not own this ticket" });
+      }
+
       const filter = { _id: new ObjectId(id) };
-      const updatedDoc = {
-        $set: {
-          ...updatedTickets,
-        },
-      };
+      const updatedDoc = { $set: { ...updatedTickets } };
       const result = await ticketsCollection.updateOne(filter, updatedDoc);
       res.send(result);
     });
 
-    app.delete("/api/tickets/:id", async (req, res) => {
+    app.delete("/api/tickets/:id", verifyToken, async (req, res) => {
       const { id } = req.params;
+
+      const ticket = await ticketsCollection.findOne({ _id: new ObjectId(id) });
+      if (!ticket) {
+        return res.status(404).send({ message: "Ticket not found" });
+      }
+
+      // DATA OWNERSHIP: Only the admin or the specific vendor who created the ticket can delete it
+      if (req.user.role !== "admin" && ticket.vendorEmail !== req.user.email) {
+        return res
+          .status(403)
+          .send({ message: "Forbidden: You do not own this ticket" });
+      }
+
       const result = await ticketsCollection.deleteOne({
         _id: new ObjectId(id),
       });
       res.send(result);
     });
 
-    // DYNAMIC IDENTIFIER ROUTE MUST COME LAST FOR TICKETS
     app.get("/api/tickets/:identifier", async (req, res) => {
       const { identifier } = req.params;
-
       try {
         if (identifier.includes("@")) {
           const result = await ticketsCollection
@@ -275,7 +357,6 @@ async function run() {
             .toArray();
           return res.send(result);
         }
-
         const query = { _id: new ObjectId(identifier) };
         const result = await ticketsCollection.findOne(query);
         res.send(result);
@@ -288,187 +369,258 @@ async function run() {
     // 3. VENDOR APIs
     // ==========================================
 
-    // Vendor Revenue & Stats Overview
-    app.get("/api/vendor/stats/:email", async (req, res) => {
-      const { email } = req.params;
+    app.get(
+      "/api/vendor/stats/:email",
+      verifyToken,
+      verifyVendor,
+      async (req, res) => {
+        const { email } = req.params;
 
-      try {
-        // Total Tickets Added
-        const totalTicketsAdded = await ticketsCollection.countDocuments({
-          vendorEmail: email,
-        });
+        // DATA OWNERSHIP: Ensure vendor is only looking at their own stats
+        if (req.user.email !== email) {
+          return res
+            .status(403)
+            .send({ message: "Forbidden: Unauthorized vendor data access" });
+        }
 
-        // Fetch all paid bookings for this vendor
-        const paidBookings = await bookingsCollection
-          .find({
+        try {
+          const totalTicketsAdded = await ticketsCollection.countDocuments({
             vendorEmail: email,
-            paymentStatus: "paid",
-          })
-          .toArray();
+          });
+          const paidBookings = await bookingsCollection
+            .find({ vendorEmail: email, paymentStatus: "paid" })
+            .toArray();
+          let totalTicketsSold = 0;
+          let totalRevenue = 0;
+          const revenueByTicketMap = {};
 
-        let totalTicketsSold = 0;
-        let totalRevenue = 0;
-        const revenueByTicketMap = {};
+          paidBookings.forEach((booking) => {
+            totalTicketsSold += booking.bookingQuantity;
+            totalRevenue += booking.totalPrice;
+            if (!revenueByTicketMap[booking.ticketTitle]) {
+              revenueByTicketMap[booking.ticketTitle] = {
+                name: booking.ticketTitle,
+                ticketsSold: 0,
+                revenue: 0,
+              };
+            }
+            revenueByTicketMap[booking.ticketTitle].ticketsSold +=
+              booking.bookingQuantity;
+            revenueByTicketMap[booking.ticketTitle].revenue +=
+              booking.totalPrice;
+          });
 
-        // Aggregate totals and group data for charts
-        paidBookings.forEach((booking) => {
-          totalTicketsSold += booking.bookingQuantity;
-          totalRevenue += booking.totalPrice;
-
-          // Group by ticket title for the charts
-          if (!revenueByTicketMap[booking.ticketTitle]) {
-            revenueByTicketMap[booking.ticketTitle] = {
-              name: booking.ticketTitle,
-              ticketsSold: 0,
-              revenue: 0,
-            };
-          }
-          revenueByTicketMap[booking.ticketTitle].ticketsSold +=
-            booking.bookingQuantity;
-          revenueByTicketMap[booking.ticketTitle].revenue += booking.totalPrice;
-        });
-
-        // Convert the map into an array for Recharts
-        const chartData = Object.values(revenueByTicketMap);
-        res.send({
-          totalTicketsAdded,
-          totalTicketsSold,
-          totalRevenue,
-          chartData,
-        });
-      } catch (error) {
-        console.error("Stats Error:", error);
-        res.status(500).send({ error: "Failed to aggregate vendor stats" });
-      }
-    });
+          const chartData = Object.values(revenueByTicketMap);
+          res.send({
+            totalTicketsAdded,
+            totalTicketsSold,
+            totalRevenue,
+            chartData,
+          });
+        } catch (error) {
+          res.status(500).send({ error: "Failed to aggregate vendor stats" });
+        }
+      },
+    );
 
     // ==========================================
     // 4. BOOKINGS APIs
     // ==========================================
 
-    app.get("/api/bookings/passenger/:email", async (req, res) => {
-      const { email } = req.params;
-      try {
-        const result = await bookingsCollection
-          .find({ passengerEmail: email })
-          .toArray();
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ error: "Failed to fetch user bookings" });
-      }
-    });
+    app.get(
+      "/api/bookings/passenger/:email",
+      verifyToken,
+      verifyPassenger,
+      async (req, res) => {
+        const { email } = req.params;
 
-    app.get("/api/bookings/vendor/:email", async (req, res) => {
-      const { email } = req.params;
-      try {
-        const result = await bookingsCollection
-          .find({ vendorEmail: email })
-          .toArray();
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ error: "Failed to fetch vendor bookings" });
-      }
-    });
+        // DATA OWNERSHIP
+        if (req.user.email !== email) {
+          return res.status(403).send({
+            message: "Forbidden: Cannot access another passenger bookings",
+          });
+        }
 
-    // Updates booking and creates new payment
-    app.post("/api/bookings/payments", async (req, res) => {
-      const {
-        amount,
-        ticketId,
-        ticketTitle,
-        quantity,
-        email,
-        bookingId,
-        paymentType,
-        transactionId,
-        paymentStatus,
-      } = req.body;
+        try {
+          const result = await bookingsCollection
+            .find({ passengerEmail: email })
+            .toArray();
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ error: "Failed to fetch user bookings" });
+        }
+      },
+    );
 
-      const parsedQuantity = parseInt(quantity);
+    app.get(
+      "/api/bookings/vendor/:email",
+      verifyToken,
+      verifyVendor,
+      async (req, res) => {
+        const { email } = req.params;
 
-      const paymentData = {
-        ticketId,
-        ticketTitle,
-        passengerEmail: email,
-        quantity: parsedQuantity,
-        amount,
-        transactionId,
-        paymentType,
-        paidAt: new Date(),
-      };
+        // DATA OWNERSHIP
+        if (req.user.email !== email) {
+          return res.status(403).send({
+            message: "Forbidden: Cannot access another vendor bookings",
+          });
+        }
 
-      const isPaymentExists = await paymentsCollection.findOne({
-        transactionId,
-      });
-      if (isPaymentExists) {
-        return res.status(200).send({ message: "Already paid" });
-      }
+        try {
+          const result = await bookingsCollection
+            .find({ vendorEmail: email })
+            .toArray();
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ error: "Failed to fetch vendor bookings" });
+        }
+      },
+    );
 
-      const paymentRes = await paymentsCollection.insertOne(paymentData);
+    app.post(
+      "/api/bookings/payments",
+      verifyToken,
+      verifyPassenger,
+      async (req, res) => {
+        const {
+          amount,
+          ticketId,
+          ticketTitle,
+          quantity,
+          email,
+          bookingId,
+          paymentType,
+          transactionId,
+          paymentStatus,
+        } = req.body;
 
-      await bookingsCollection.updateOne(
-        { _id: new ObjectId(bookingId) },
-        {
-          $set: {
-            paymentStatus: "paid",
-            updatedAt: new Date(),
-          },
-        },
-      );
+        // DATA OWNERSHIP
+        if (req.user.email !== email) {
+          return res.status(403).send({
+            message: "Forbidden: Cannot process payment for another passenger",
+          });
+        }
 
-      await ticketsCollection.updateOne(
-        { _id: new ObjectId(ticketId) },
-        { $inc: { quantity: -parsedQuantity } },
-      );
+        const parsedQuantity = parseInt(quantity);
 
-      res.send(paymentRes);
-    });
-
-    app.patch("/api/bookings/:id/status", async (req, res) => {
-      const { id } = req.params;
-      const { status } = req.body;
-      try {
-        const filter = { _id: new ObjectId(id) };
-        const updatedDoc = {
-          $set: { status: status, updatedAt: new Date() },
+        const paymentData = {
+          ticketId,
+          ticketTitle,
+          passengerEmail: email,
+          quantity: parsedQuantity,
+          amount,
+          transactionId,
+          paymentType,
+          paidAt: new Date(),
         };
-        const result = await bookingsCollection.updateOne(filter, updatedDoc);
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ error: "Failed to update status" });
-      }
-    });
 
-    app.post("/api/bookings", async (req, res) => {
-      const bookingData = req.body;
-      const newBooking = {
-        ...bookingData,
-        createdAt: new Date(),
-      };
-      const result = await bookingsCollection.insertOne(newBooking);
-      res.send(result);
-    });
+        const isPaymentExists = await paymentsCollection.findOne({
+          transactionId,
+        });
+        if (isPaymentExists)
+          return res.status(200).send({ message: "Already paid" });
+
+        const paymentRes = await paymentsCollection.insertOne(paymentData);
+        await bookingsCollection.updateOne(
+          { _id: new ObjectId(bookingId) },
+          { $set: { paymentStatus: "paid", updatedAt: new Date() } },
+        );
+        await ticketsCollection.updateOne(
+          { _id: new ObjectId(ticketId) },
+          { $inc: { quantity: -parsedQuantity } },
+        );
+
+        res.send(paymentRes);
+      },
+    );
+
+    app.patch(
+      "/api/bookings/:id/status",
+      verifyToken,
+      verifyVendor,
+      async (req, res) => {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        const booking = await bookingsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!booking) {
+          return res.status(404).send({ message: "Booking not found" });
+        }
+
+        // DATA OWNERSHIP: A vendor can only update the status of a booking that belongs to their tickets
+        if (booking.vendorEmail !== req.user.email) {
+          return res
+            .status(403)
+            .send({ message: "Forbidden: You cannot modify this booking" });
+        }
+
+        try {
+          const filter = { _id: new ObjectId(id) };
+          const updatedDoc = {
+            $set: { status: status, updatedAt: new Date() },
+          };
+          const result = await bookingsCollection.updateOne(filter, updatedDoc);
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ error: "Failed to update status" });
+        }
+      },
+    );
+
+    app.post(
+      "/api/bookings",
+      verifyToken,
+      verifyPassenger,
+      async (req, res) => {
+        const bookingData = req.body;
+
+        // DATA OWNERSHIP
+        if (bookingData.passengerEmail !== req.user.email) {
+          return res.status(403).send({
+            message: "Forbidden: Cannot create booking for another passenger",
+          });
+        }
+
+        const newBooking = { ...bookingData, createdAt: new Date() };
+        const result = await bookingsCollection.insertOne(newBooking);
+        res.send(result);
+      },
+    );
 
     // ==========================================
     // 5. PAYMENTS APIs
     // ==========================================
 
-    app.get("/api/payments/passenger/:email", async (req, res) => {
-      const { email } = req.params;
-      try {
-        // Sort by paidAt descending (-1) to show newest transactions first
-        const result = await paymentsCollection
-          .find({ passengerEmail: email })
-          .sort({ paidAt: -1 })
-          .toArray();
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ error: "Failed to fetch transaction history" });
-      }
-    });
+    app.get(
+      "/api/payments/passenger/:email",
+      verifyToken,
+      verifyPassenger,
+      async (req, res) => {
+        const { email } = req.params;
+
+        // DATA OWNERSHIP
+        if (req.user.email !== email) {
+          return res.status(403).send({
+            message: "Forbidden: Cannot access another passenger payments",
+          });
+        }
+
+        try {
+          const result = await paymentsCollection
+            .find({ passengerEmail: email })
+            .sort({ paidAt: -1 })
+            .toArray();
+          res.send(result);
+        } catch (error) {
+          res
+            .status(500)
+            .send({ error: "Failed to fetch transaction history" });
+        }
+      },
+    );
   } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
   }
 }
 
