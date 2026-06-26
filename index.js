@@ -198,6 +198,61 @@ async function run() {
     //   res.send(result);
     // });
 
+    // Vendor Revenue & Stats Overview
+    app.get("/api/vendor/stats/:email", async (req, res) => {
+      const { email } = req.params;
+
+      try {
+        // Total Tickets Added
+        const totalTicketsAdded = await ticketsCollection.countDocuments({
+          vendorEmail: email,
+        });
+
+        // Fetch all paid bookings for this vendor
+        const paidBookings = await bookingsCollection
+          .find({
+            vendorEmail: email,
+            paymentStatus: "paid",
+          })
+          .toArray();
+
+        let totalTicketsSold = 0;
+        let totalRevenue = 0;
+        const revenueByTicketMap = {};
+
+        // Aggregate totals and group data for charts
+        paidBookings.forEach((booking) => {
+          totalTicketsSold += booking.bookingQuantity;
+          totalRevenue += booking.totalPrice;
+
+          // Group by ticket title for the charts
+          if (!revenueByTicketMap[booking.ticketTitle]) {
+            revenueByTicketMap[booking.ticketTitle] = {
+              name: booking.ticketTitle,
+              ticketsSold: 0,
+              revenue: 0,
+            };
+          }
+          revenueByTicketMap[booking.ticketTitle].ticketsSold +=
+            booking.bookingQuantity;
+          revenueByTicketMap[booking.ticketTitle].revenue += booking.totalPrice;
+        });
+
+        // Convert the map into an array for Recharts
+        const chartData = Object.values(revenueByTicketMap);
+
+        res.send({
+          totalTicketsAdded,
+          totalTicketsSold,
+          totalRevenue,
+          chartData,
+        });
+      } catch (error) {
+        console.error("Stats Error:", error);
+        res.status(500).send({ error: "Failed to aggregate vendor stats" });
+      }
+    });
+
     // Toggle Advertisement Status
     app.patch("/api/tickets/:id/advertise", async (req, res) => {
       const { id } = req.params;
@@ -382,6 +437,22 @@ async function run() {
       };
       const result = await bookingsCollection.insertOne(newBooking);
       res.send(result);
+    });
+
+    // Payments related APIs
+
+    app.get("/api/payments/passenger/:email", async (req, res) => {
+      const { email } = req.params;
+      try {
+        // Sort by paidAt descending (-1) to show newest transactions first
+        const result = await paymentsCollection
+          .find({ passengerEmail: email })
+          .sort({ paidAt: -1 })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch transaction history" });
+      }
     });
   } finally {
     // Ensures that the client will close when you finish/error
